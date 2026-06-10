@@ -369,7 +369,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
           let finalTotal = itemsLimpos.reduce((acc, item) => acc + (item.unit_price * item.quantity), 0);
 
           const enderecoComNota = args.delivery_type === "DELIVERY"
-            ? `${args.delivery_address || ""}\n\n⚠️ FRETE: A VER COM ENTREGADOR\nR$5 dentro da cidade | R$15 fora da cidade`
+            ? args.delivery_address || ""
             : null;
 
           const { data: orderData, error: orderError } = await supabase
