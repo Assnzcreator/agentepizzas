@@ -49,6 +49,10 @@ const DEBOUNCE_MS = 2500; // Aguarda 2.5s por mais mensagens antes de disparar
 const humanPausedChats = new Map();
 const HUMAN_PAUSE_MS = 30 * 60 * 1000; // 30 minutos sem atividade humana reativa o bot
 
+// Rastreia quando o bot enviou a última mensagem para um chat
+// Assim evitamos que o bot confunda a própria mensagem (ecoada no webhook) com um humano
+const botLastReply = new Map();
+
 function markMessageProcessed(messageId) {
   processedMessages.add(messageId);
   // Limpa cache antigo se ficar muito grande
@@ -195,7 +199,7 @@ const toolEnviarCardapio = {
   type: "function",
   function: {
     name: "enviar_foto_cardapio",
-    description: "SÓ chame esta função se o cliente explicitamente pedir a foto/imagem do cardápio. NÃO chame se o cliente perguntar sobre novidades, preços ou lanches específicos.",
+    description: "Chame esta função SEMPRE que o cliente pedir o cardápio, perguntar pelos sabores, opções, ou quiser ver o que tem na pizzaria. Essa função envia a imagem com a arte do cardápio.",
     parameters: {
       type: "object",
       properties: {}
@@ -347,6 +351,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
           try {
             const imageBuffer = fs.readFileSync('cardapio.jpg');
             const base64Prefix = "data:image/jpeg;base64," + imageBuffer.toString('base64');
+            botLastReply.set(chatId, Date.now());
             await sendWhatsAppMedia(chatId, base64Prefix, "Aqui está o nosso cardápio! 🍕 Fique à vontade para escolher e me diga o que vai querer.");
             conversations[chatId].push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: "Foto do cardápio enviada com sucesso." });
           } catch (err) {
@@ -404,12 +409,15 @@ async function processarMensagem(chatId, userText, mediaPart) {
             const msgConfirmacao = isDelivery
               ? `✅ *Pedido confirmado e enviado para a cozinha!* 🍕🛵\n\nLogo mais nosso entregador estará a caminho!\n\n🛵 *Taxa de entrega:*\n• Dentro da cidade: *R$ 5,00*\n• Fora da cidade: *R$ 15,00*\n\nO valor do frete será acertado diretamente com o entregador na hora da entrega. Qualquer dúvida é só chamar! 😊`
               : `✅ *Pedido confirmado e enviado para a cozinha!* 🍕\n\nFique à vontade para retirar em breve. Agradecemos a preferência! 😊`;
+            
+            botLastReply.set(chatId, Date.now());
             await sendWhatsAppMessage(chatId, msgConfirmacao);
             delete conversations[chatId];
           }
         }
       }
     } else if (aiMessage) {
+      botLastReply.set(chatId, Date.now());
       await sendWhatsAppMessage(chatId, aiMessage);
     }
   } catch (error) {
@@ -446,16 +454,23 @@ app.post('/webhook', async (req, res) => {
 
   const isMedia = msgData.type === 'media' || msgData.mediaType === 'image' || msgData.mediaType === 'audio' || msgData.mediaType === 'document' || msgData.mediaType === 'video';
 
-  // === ATENDENTE HUMANO: detecta quando operador responde pelo painel ===
-  // fromMe=true + wasSentByApi=false = humano respondeu pelo app/painel da UAZAPI
-  if (fromMe && !wasSentByApi && chatId) {
-    humanPausedChats.set(chatId, Date.now() + HUMAN_PAUSE_MS);
-    console.log(`👤 Atendente humano detectado em [${chatId}]. Bot pausado neste chat por 30 min.`);
-    return;
+  // === ATENDENTE HUMANO ===
+  // O UAZAPI às vezes não envia "wasSentByApi" em fotos/mídias enviadas via API.
+  // Para o bot não confundir a PRÓPRIA mensagem com um humano e se pausar:
+  if (fromMe && chatId) {
+    const lastBotMsgTime = botLastReply.get(chatId) || 0;
+    const timeSinceBotMsg = Date.now() - lastBotMsgTime;
+
+    // Se o bot não mandou mensagem nos últimos 15 segundos, então foi o HUMANO que digitou
+    if (timeSinceBotMsg > 15000 && !wasSentByApi) {
+      humanPausedChats.set(chatId, Date.now() + HUMAN_PAUSE_MS);
+      console.log(`👤 Atendente humano detectado em [${chatId}]. Bot pausado neste chat por 30 min.`);
+    }
+    return; // Sempre ignora mensagens fromMe (seja do bot ou do humano)
   }
 
-  if (!chatId || fromMe || (!userText && !isMedia)) {
-    console.log("⚠️ Ignorando mensagem: Sem conteúdo ou é do próprio bot.");
+  if (!chatId || (!userText && !isMedia)) {
+    console.log("⚠️ Ignorando mensagem: Sem conteúdo.");
     return;
   }
 
