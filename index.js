@@ -33,6 +33,9 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANO
 // Armazena o histórico das conversas em memória (para produção idealmente num Redis ou BD)
 const conversations = {};
 
+// Flag de pausa do bot
+let botPausado = false;
+
 // Proteção contra duplicação de webhooks (evita mini-DDoS no banco)
 const processedMessages = new Set();
 const processingChats = new Map(); // chatId -> Promise (evita processar 2 msgs do mesmo chat em paralelo)
@@ -110,7 +113,11 @@ async function sendWhatsAppMessage(chatId, text) {
     const limpo = chatId.split('@')[0];
     await axios.post(`${process.env.UAZAPI_URL}/send/text`, {
       number: limpo,
-      text: text
+      text: text,
+      linkPreview: false,
+      options: {
+        linkPreview: false
+      }
     }, {
       headers: {
         'Content-Type': 'application/json',
@@ -200,18 +207,37 @@ function formatPhoneNumber(phone) {
   return phone;
 }
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', pausado: botPausado }));
+
+app.post('/pausar', (req, res) => {
+  botPausado = true;
+  console.log('⏸️  Bot PAUSADO — não enviará mais mensagens.');
+  res.json({ status: 'pausado' });
+});
+
+app.post('/retomar', (req, res) => {
+  botPausado = false;
+  console.log('▶️  Bot RETOMADO — voltou a responder.');
+  res.json({ status: 'ativo' });
+});
 
 app.post('/webhook', async (req, res) => {
   res.status(200).send('OK'); // Responder rápido pro Webhook não dar timeout
   
   const body = req.body;
+  if (botPausado) {
+    console.log('⏸️  Bot pausado. Mensagem ignorada.');
+    return;
+  }
+
   console.log("📩 Webhook recebido:", JSON.stringify(body, null, 2));
 
   const msgData = body.message || body;
   const chatId = msgData.chatid || msgData.remoteJid || msgData.chatId;
   const fromMe = msgData.fromMe === true;
   const messageId = msgData.messageid || msgData.id || msgData.key?.id;
+
+
 
   let userText = typeof msgData.text === 'string' ? msgData.text : 
                  typeof msgData.content === 'string' ? msgData.content : 
@@ -243,21 +269,23 @@ app.post('/webhook', async (req, res) => {
   processingChats.set(chatId, processingPromise);
 
   const now = new Date();
-  const currentHour = now.getUTCHours() - 3; // Fuso de Brasília (UTC-3)
-  const localHour = currentHour < 0 ? currentHour + 24 : currentHour;
+  // const currentHour = now.getUTCHours() - 3; // Fuso de Brasília (UTC-3)
+  // const localHour = currentHour < 0 ? currentHour + 24 : currentHour;
 
-  if (localHour < 18 || localHour >= 22) {
-    if (!conversations[chatId] || conversations[chatId].closedAlertSent) {
-      await sendWhatsAppMessage(chatId, "Olá! O *Empório das Pizzas* agradece seu contato. 🍕🛵\n\nNo momento estamos fechados. Nosso horário de funcionamento é das *18:00 às 22:00*.\n\nRetorne o contato durante esse horário para fazer o seu pedido!");
-      conversations[chatId] = { closedAlertSent: true };
-    }
-    console.log(`⚠️ Fora do horário comercial (${localHour}h). Alerta enviado para ${chatId}.`);
-    return;
-  }
+  // if (localHour < 18 || localHour >= 22) {
+  //   if (!conversations[chatId] || conversations[chatId].closedAlertSent) {
+  //     await sendWhatsAppMessage(chatId, "Olá! O *Empório das Pizzas* agradece seu contato. 🍕🛵\n\nNo momento estamos fechados. Nosso horário de funcionamento é das *18:00 às 22:00*.\n\nRetorne o contato durante esse horário para fazer o seu pedido!");
+  //     conversations[chatId] = { closedAlertSent: true };
+  //   }
+  //   console.log(`⚠️ Fora do horário comercial (${localHour}h). Alerta enviado para ${chatId}.`);
+  //   resolveProcessing();
+  //   processingChats.delete(chatId);
+  //   return;
+  // }
 
-  if (conversations[chatId] && conversations[chatId].closedAlertSent) {
-    delete conversations[chatId];
-  }
+  // if (conversations[chatId] && conversations[chatId].closedAlertSent) {
+  //   delete conversations[chatId];
+  // }
 
   let mediaPart = null;
   if (isMedia) {
@@ -287,6 +315,8 @@ app.post('/webhook', async (req, res) => {
 
   if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.includes('COLOQUE_AQUI')) {
     console.log("❌ ERRO: OpenAI API Key não configurada no arquivo .env!");
+    resolveProcessing();
+    processingChats.delete(chatId);
     return;
   }
 
@@ -297,8 +327,7 @@ app.post('/webhook', async (req, res) => {
 
   if (!conversations[chatId]) {
     conversations[chatId] = [
-      { role: "system", content: currentSystemPrompt },
-      { role: "assistant", content: "Olá! Bem-vindo ao Empório das Pizzas. Como posso ajudar você hoje? 🍕" }
+      { role: "system", content: currentSystemPrompt }
     ];
   } else {
     // Atualiza o prompt de sistema caso o cardápio tenha mudado
@@ -327,6 +356,8 @@ app.post('/webhook', async (req, res) => {
     } catch (err) {
       console.error("❌ Erro ao transcrever áudio:", err.message || err);
       await sendWhatsAppMessage(chatId, "Desculpe, não consegui entender o áudio. Pode mandar por texto?");
+      resolveProcessing();
+      processingChats.delete(chatId);
       return;
     }
   }
@@ -398,10 +429,11 @@ app.post('/webhook', async (req, res) => {
 
           const tipoEntregaConvertido = args.delivery_type === "DELIVERY" ? "WHATSAPP:DELIVERY" : "WHATSAPP:BALCAO";
           
-          let finalTotal = args.total;
-          const itemsSum = (args.items || []).reduce((acc, item) => acc + (item.unit_price * item.quantity), 0);
-          if (args.delivery_type === "DELIVERY" && Math.abs(finalTotal - itemsSum) < 0.01) {
-            finalTotal += 5.00;
+          const itemsLimpos = (args.items || []).filter(i => !i.product_name.toLowerCase().includes("taxa de entrega") && !i.product_name.toLowerCase().includes("frete"));
+          
+          let finalTotal = itemsLimpos.reduce((acc, item) => acc + (item.unit_price * item.quantity), 0);
+          if (args.delivery_type === "DELIVERY") {
+            finalTotal += 5.00; // O sistema força a adição de 5 reais se for delivery, independente da IA
           }
 
           const { data: orderData, error: orderError } = await supabase
@@ -425,8 +457,8 @@ app.post('/webhook', async (req, res) => {
             await sendWhatsAppMessage(chatId, "Desculpe, tivemos um erro no sistema ao salvar seu pedido. Pode aguardar um momento?");
             conversations[chatId].push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: "Erro ao salvar o pedido." });
           } else {
-            if (args.items && args.items.length > 0) {
-              const itemsToInsert = args.items.map(item => ({
+            if (itemsLimpos.length > 0) {
+              const itemsToInsert = itemsLimpos.map(item => ({
                 order_id: orderData.id,
                 product_id: "whatsapp-custom",
                 product_name: item.product_name,
