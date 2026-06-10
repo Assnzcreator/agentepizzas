@@ -41,6 +41,14 @@ const processedMessages = new Set();
 const processingChats = new Map(); // chatId -> Promise (evita processar 2 msgs do mesmo chat em paralelo)
 const MAX_PROCESSED_CACHE = 500; // Limpa cache antigo para não consumir memória infinitamente
 
+// Debounce: agrupa mensagens picotadas do mesmo chat antes de processar
+const textBuffers = new Map(); // chatId -> { texts: [], timer: null }
+const DEBOUNCE_MS = 2500; // Aguarda 2.5s por mais mensagens antes de disparar
+
+// Atendimento humano: chats pausados manualmente (chatId -> timestamp de expiração)
+const humanPausedChats = new Map();
+const HUMAN_PAUSE_MS = 30 * 60 * 1000; // 30 minutos sem atividade humana reativa o bot
+
 function markMessageProcessed(messageId) {
   processedMessages.add(messageId);
   // Limpa cache antigo se ficar muito grande
@@ -81,7 +89,9 @@ async function getDynamicMenu() {
     categorias[cat].push(item);
   }
 
-  const today = new Date().getDay();
+  // Usa fuso de Brasília (UTC-3) para garantir o dia correto
+  const nowBRT = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const today = nowBRT.getUTCDay();
   const daysOfWeek = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
 
   let menuTexto = "";
@@ -221,97 +231,19 @@ app.post('/retomar', (req, res) => {
   res.json({ status: 'ativo' });
 });
 
-app.post('/webhook', async (req, res) => {
-  res.status(200).send('OK'); // Responder rápido pro Webhook não dar timeout
-  
-  const body = req.body;
-  if (botPausado) {
-    console.log('⏸️  Bot pausado. Mensagem ignorada.');
-    return;
-  }
-
-  console.log("📩 Webhook recebido:", JSON.stringify(body, null, 2));
-
-  const msgData = body.message || body;
-  const chatId = msgData.chatid || msgData.remoteJid || msgData.chatId;
-  const fromMe = msgData.fromMe === true;
-  const messageId = msgData.messageid || msgData.id || msgData.key?.id;
-
-
-
-  let userText = typeof msgData.text === 'string' ? msgData.text : 
-                 typeof msgData.content === 'string' ? msgData.content : 
-                 typeof msgData.body === 'string' ? msgData.body : "";
-
-  const isMedia = msgData.type === 'media' || msgData.mediaType === 'image' || msgData.mediaType === 'audio' || msgData.mediaType === 'document' || msgData.mediaType === 'video';
-
-  if (!chatId || fromMe || (!userText && !isMedia)) {
-    console.log("⚠️ Ignorando mensagem: Sem conteúdo ou é do próprio bot.");
-    return;
-  }
-
-  // === PROTEÇÃO ANTI-DUPLICAÇÃO ===
-  if (messageId && processedMessages.has(messageId)) {
-    console.log(`⚠️ Mensagem ${messageId} já processada. Ignorando duplicata.`);
-    return;
-  }
-  if (messageId) markMessageProcessed(messageId);
-
+// ============================================================
+// FUNÇÃO PRINCIPAL DE PROCESSAMENTO (chamada pelo debounce ou por mídia)
+// ============================================================
+async function processarMensagem(chatId, userText, mediaPart) {
   // Aguarda se já tem processamento em andamento para este chat
   if (processingChats.has(chatId)) {
     console.log(`⏳ Chat ${chatId} já está processando. Aguardando...`);
     try { await processingChats.get(chatId); } catch (e) { /* ignora erro do anterior */ }
   }
 
-  // Cria uma promise para rastrear o processamento deste chat
   let resolveProcessing;
   const processingPromise = new Promise(r => { resolveProcessing = r; });
   processingChats.set(chatId, processingPromise);
-
-  const now = new Date();
-  // const currentHour = now.getUTCHours() - 3; // Fuso de Brasília (UTC-3)
-  // const localHour = currentHour < 0 ? currentHour + 24 : currentHour;
-
-  // if (localHour < 18 || localHour >= 22) {
-  //   if (!conversations[chatId] || conversations[chatId].closedAlertSent) {
-  //     await sendWhatsAppMessage(chatId, "Olá! O *Empório das Pizzas* agradece seu contato. 🍕🛵\n\nNo momento estamos fechados. Nosso horário de funcionamento é das *18:00 às 22:00*.\n\nRetorne o contato durante esse horário para fazer o seu pedido!");
-  //     conversations[chatId] = { closedAlertSent: true };
-  //   }
-  //   console.log(`⚠️ Fora do horário comercial (${localHour}h). Alerta enviado para ${chatId}.`);
-  //   resolveProcessing();
-  //   processingChats.delete(chatId);
-  //   return;
-  // }
-
-  // if (conversations[chatId] && conversations[chatId].closedAlertSent) {
-  //   delete conversations[chatId];
-  // }
-
-  let mediaPart = null;
-  if (isMedia) {
-    const messageId = msgData.messageid || msgData.id;
-    try {
-      console.log(`Baixando mídia ${messageId}...`);
-      const mediaResponse = await axios.post(`${process.env.UAZAPI_URL}/message/download`, {
-        id: messageId,
-        return_base64: true,
-        return_link: false,
-        generate_mp3: true
-      }, {
-        headers: { 'token': process.env.UAZAPI_TOKEN }
-      });
-
-      if (mediaResponse.data && mediaResponse.data.base64Data) {
-        mediaPart = {
-          data: mediaResponse.data.base64Data,
-          mimeType: mediaResponse.data.mimetype || "image/jpeg"
-        };
-        console.log("✅ Mídia baixada com sucesso!");
-      }
-    } catch (e) {
-      console.error("❌ Erro ao baixar mídia:", e?.response?.data || e.message);
-    }
-  }
 
   if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.includes('COLOQUE_AQUI')) {
     console.log("❌ ERRO: OpenAI API Key não configurada no arquivo .env!");
@@ -323,18 +255,24 @@ app.post('/webhook', async (req, res) => {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
   const dynamicMenuString = await getDynamicMenu();
-  const currentSystemPrompt = getSystemPrompt(dynamicMenuString);
+
+  // Passa o dia da semana em BRT para o prompt (evita alucinação de data)
+  const daysOfWeekPT = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
+  const nowBRT = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  const diaDaSemana = daysOfWeekPT[nowBRT.getUTCDay()];
+
+  const currentSystemPrompt = getSystemPrompt(dynamicMenuString, diaDaSemana);
 
   if (!conversations[chatId]) {
     conversations[chatId] = [
       { role: "system", content: currentSystemPrompt }
     ];
   } else {
-    // Atualiza o prompt de sistema caso o cardápio tenha mudado
     if (conversations[chatId].length > 0 && conversations[chatId][0].role === "system") {
       conversations[chatId][0].content = currentSystemPrompt;
     }
   }
+
   // Se for áudio, processa a transcrição
   if (mediaPart && mediaPart.mimeType && mediaPart.mimeType.startsWith('audio/')) {
     try {
@@ -342,7 +280,7 @@ app.post('/webhook', async (req, res) => {
       const os = require('os');
       const tempFile = path.join(os.tmpdir(), `audio_${Date.now()}.ogg`);
       fs.writeFileSync(tempFile, Buffer.from(mediaPart.data, 'base64'));
-      
+
       console.log("🎙️ Transcrevendo áudio com Whisper...");
       const transcription = await openai.audio.transcriptions.create({
         file: fs.createReadStream(tempFile),
@@ -350,9 +288,9 @@ app.post('/webhook', async (req, res) => {
       });
       console.log("✅ Áudio transcrito:", transcription.text);
       userText = `[Áudio transcrito]: ${transcription.text}`;
-      
+
       fs.unlinkSync(tempFile);
-      mediaPart = null; // Reseta para não processar como imagem
+      mediaPart = null;
     } catch (err) {
       console.error("❌ Erro ao transcrever áudio:", err.message || err);
       await sendWhatsAppMessage(chatId, "Desculpe, não consegui entender o áudio. Pode mandar por texto?");
@@ -365,11 +303,7 @@ app.post('/webhook', async (req, res) => {
   let userContent;
   if (mediaPart) {
     userContent = [];
-    if (userText) {
-      userContent.push({ type: "text", text: userText });
-    } else {
-      userContent.push({ type: "text", text: "Analise a mídia que acabei de enviar." });
-    }
+    userContent.push({ type: "text", text: userText || "Analise a mídia que acabei de enviar." });
     userContent.push({ type: "image_url", image_url: { url: `data:${mediaPart.mimeType};base64,${mediaPart.data}` } });
   } else {
     userContent = userText || "(Mensagem vazia)";
@@ -387,7 +321,7 @@ app.post('/webhook', async (req, res) => {
       });
     } catch (e) {
       if (e.status === 429) {
-        console.log("⚠️ Limite de requisições atingido. Aguardando 15 segundos antes de tentar novamente...");
+        console.log("⚠️ Limite de requisições atingido. Aguardando 15 segundos...");
         await sendWhatsAppMessage(chatId, "⏳ Estou processando sua mensagem, só um instante...");
         await new Promise(resolve => setTimeout(resolve, 15000));
         response = await openai.chat.completions.create({
@@ -413,9 +347,7 @@ app.post('/webhook', async (req, res) => {
           try {
             const imageBuffer = fs.readFileSync('cardapio.jpg');
             const base64Prefix = "data:image/jpeg;base64," + imageBuffer.toString('base64');
-            
             await sendWhatsAppMedia(chatId, base64Prefix, "Aqui está o nosso cardápio! 🍕 Fique à vontade para escolher e me diga o que vai querer.");
-            
             conversations[chatId].push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: "Foto do cardápio enviada com sucesso." });
           } catch (err) {
             console.error("❌ Erro ao ler cardapio.jpg:", err.message);
@@ -428,13 +360,12 @@ app.post('/webhook', async (req, res) => {
           console.log("🤖 OpenAI fechou o pedido:", args);
 
           const tipoEntregaConvertido = args.delivery_type === "DELIVERY" ? "WHATSAPP:DELIVERY" : "WHATSAPP:BALCAO";
-          
           const itemsLimpos = (args.items || []).filter(i => !i.product_name.toLowerCase().includes("taxa de entrega") && !i.product_name.toLowerCase().includes("frete"));
-          
           let finalTotal = itemsLimpos.reduce((acc, item) => acc + (item.unit_price * item.quantity), 0);
-          if (args.delivery_type === "DELIVERY") {
-            finalTotal += 5.00; // O sistema força a adição de 5 reais se for delivery, independente da IA
-          }
+
+          const enderecoComNota = args.delivery_type === "DELIVERY"
+            ? `${args.delivery_address || ""}\n\n⚠️ FRETE: A VER COM ENTREGADOR\nR$5 dentro da cidade | R$15 fora da cidade`
+            : null;
 
           const { data: orderData, error: orderError } = await supabase
             .from('orders')
@@ -442,7 +373,7 @@ app.post('/webhook', async (req, res) => {
               customer_name: args.customer_name || "Cliente WhatsApp",
               customer_phone: formatPhoneNumber(chatId),
               delivery_type: tipoEntregaConvertido,
-              delivery_address: args.delivery_address || null,
+              delivery_address: enderecoComNota,
               payment_method: args.payment_method || "DINHEIRO",
               payment_change: args.payment_change || null,
               total: finalTotal,
@@ -468,9 +399,12 @@ app.post('/webhook', async (req, res) => {
               }));
               await supabase.from('order_items').insert(itemsToInsert);
             }
-            
-            await sendWhatsAppMessage(chatId, "✅ *Pedido confirmado e enviado para a cozinha!*\nLogo mais ele estará pronto. Agradecemos a preferência! 🍕🛵");
-            
+
+            const isDelivery = args.delivery_type === "DELIVERY";
+            const msgConfirmacao = isDelivery
+              ? `✅ *Pedido confirmado e enviado para a cozinha!* 🍕🛵\n\nLogo mais nosso entregador estará a caminho!\n\n🛵 *Taxa de entrega:*\n• Dentro da cidade: *R$ 5,00*\n• Fora da cidade: *R$ 15,00*\n\nO valor do frete será acertado diretamente com o entregador na hora da entrega. Qualquer dúvida é só chamar! 😊`
+              : `✅ *Pedido confirmado e enviado para a cozinha!* 🍕\n\nFique à vontade para retirar em breve. Agradecemos a preferência! 😊`;
+            await sendWhatsAppMessage(chatId, msgConfirmacao);
             delete conversations[chatId];
           }
         }
@@ -481,10 +415,119 @@ app.post('/webhook', async (req, res) => {
   } catch (error) {
     console.error("Erro na OpenAI:", error);
   } finally {
-    // Libera o lock do chat para permitir próximas mensagens
     if (resolveProcessing) resolveProcessing();
     processingChats.delete(chatId);
   }
+}
+
+// ============================================================
+// WEBHOOK — recebe mensagens, aplica debounce e despacha
+// ============================================================
+app.post('/webhook', async (req, res) => {
+  res.status(200).send('OK');
+
+  const body = req.body;
+  if (botPausado) {
+    console.log('⏸️  Bot pausado. Mensagem ignorada.');
+    return;
+  }
+
+  console.log("📩 Webhook recebido:", JSON.stringify(body, null, 2));
+
+  const msgData = body.message || body;
+  const chatId = msgData.chatid || msgData.remoteJid || msgData.chatId;
+  const fromMe = msgData.fromMe === true;
+  const wasSentByApi = msgData.wasSentByApi === true;
+  const messageId = msgData.messageid || msgData.id || msgData.key?.id;
+
+  let userText = typeof msgData.text === 'string' ? msgData.text :
+                 typeof msgData.content === 'string' ? msgData.content :
+                 typeof msgData.body === 'string' ? msgData.body : "";
+
+  const isMedia = msgData.type === 'media' || msgData.mediaType === 'image' || msgData.mediaType === 'audio' || msgData.mediaType === 'document' || msgData.mediaType === 'video';
+
+  // === ATENDENTE HUMANO: detecta quando operador responde pelo painel ===
+  // fromMe=true + wasSentByApi=false = humano respondeu pelo app/painel da UAZAPI
+  if (fromMe && !wasSentByApi && chatId) {
+    humanPausedChats.set(chatId, Date.now() + HUMAN_PAUSE_MS);
+    console.log(`👤 Atendente humano detectado em [${chatId}]. Bot pausado neste chat por 30 min.`);
+    return;
+  }
+
+  if (!chatId || fromMe || (!userText && !isMedia)) {
+    console.log("⚠️ Ignorando mensagem: Sem conteúdo ou é do próprio bot.");
+    return;
+  }
+
+  // === PROTEÇÃO ANTI-DUPLICAÇÃO ===
+  if (messageId && processedMessages.has(messageId)) {
+    console.log(`⚠️ Mensagem ${messageId} já processada. Ignorando duplicata.`);
+    return;
+  }
+  if (messageId) markMessageProcessed(messageId);
+
+  // === VERIFICA SE CHAT ESTÁ EM ATENDIMENTO HUMANO ===
+  if (humanPausedChats.has(chatId)) {
+    if (Date.now() < humanPausedChats.get(chatId)) {
+      console.log(`👤 Chat [${chatId}] em atendimento humano. Bot silenciado.`);
+      return;
+    } else {
+      humanPausedChats.delete(chatId); // Expirou, bot reativa
+      console.log(`🤖 Atendimento humano expirado em [${chatId}]. Bot reativado.`);
+    }
+  }
+
+  // === DEBOUNCE: agrupa mensagens de texto rápidas em uma só ===
+  if (!isMedia && userText) {
+    if (!textBuffers.has(chatId)) {
+      textBuffers.set(chatId, { texts: [], timer: null });
+    }
+    const buf = textBuffers.get(chatId);
+    buf.texts.push(userText);
+    console.log(`📝 Buffer [${chatId}]: ${buf.texts.length} mensagem(ns) acumulada(s). Aguardando mais...`);
+
+    if (buf.timer) clearTimeout(buf.timer);
+    buf.timer = setTimeout(async () => {
+      textBuffers.delete(chatId);
+      const combinedText = buf.texts.join('\n');
+      console.log(`⚡ Debounce disparado para [${chatId}]: "${combinedText}"`);
+      try {
+        await processarMensagem(chatId, combinedText, null);
+      } catch (err) {
+        console.error(`❌ Erro ao processar mensagem de [${chatId}]:`, err?.message || err);
+      }
+    }, DEBOUNCE_MS);
+    return;
+  }
+
+  // === MÍDIA: baixa e processa imediatamente (sem debounce) ===
+  let mediaPart = null;
+  if (isMedia) {
+    const mediaId = msgData.messageid || msgData.id;
+    try {
+      console.log(`Baixando mídia ${mediaId}...`);
+      const mediaResponse = await axios.post(`${process.env.UAZAPI_URL}/message/download`, {
+        id: mediaId,
+        return_base64: true,
+        return_link: false,
+        generate_mp3: true
+      }, {
+        headers: { 'token': process.env.UAZAPI_TOKEN }
+      });
+
+      if (mediaResponse.data && mediaResponse.data.base64Data) {
+        mediaPart = {
+          data: mediaResponse.data.base64Data,
+          mimeType: mediaResponse.data.mimetype || "image/jpeg"
+        };
+        console.log("✅ Mídia baixada com sucesso!");
+      }
+    } catch (e) {
+      console.error("❌ Erro ao baixar mídia:", e?.response?.data || e.message);
+    }
+  }
+
+  await processarMensagem(chatId, userText, mediaPart);
 });
 
 app.listen(PORT, () => {
