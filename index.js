@@ -485,14 +485,23 @@ async function processarMensagem(chatId, userText, mediaPart) {
             conversations[chatId].push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: "Erro ao salvar o pedido." });
           } else {
             if (itemsLimpos.length > 0) {
-              const itemsToInsert = itemsLimpos.map(item => ({
-                order_id: orderData.id,
-                product_id: "whatsapp-custom",
-                product_name: "*" + String(item.product_name).replace(/\*/g, '').toUpperCase() + "*",
-                size: "M",
-                quantity: item.quantity,
-                unit_price: item.unit_price
-              }));
+              const itemsToInsert = itemsLimpos.map(item => {
+                const linhasFormatadas = String(item.product_name)
+                  .replace(/\*/g, '')
+                  .toUpperCase()
+                  .split('\n')
+                  .map(linha => "*" + linha + "*")
+                  .join('\n');
+
+                return {
+                  order_id: orderData.id,
+                  product_id: "whatsapp-custom",
+                  product_name: linhasFormatadas,
+                  size: "M",
+                  quantity: item.quantity,
+                  unit_price: item.unit_price
+                };
+              });
               await supabase.from('order_items').insert(itemsToInsert);
             }
 
