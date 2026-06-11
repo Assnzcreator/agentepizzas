@@ -211,6 +211,17 @@ const toolEnviarCardapio = {
   }
 };
 
+const toolVerificarPedido = {
+  type: "function",
+  function: {
+    name: "verificar_status_pedido",
+    description: "Use esta função caso o cliente diga que JÁ FEZ um pedido pelo site ou WhatsApp hoje, ou se ele perguntar 'como tá meu pedido?'. O sistema consultará o banco de dados usando o WhatsApp dele para checar se existe um pedido recente.",
+    parameters: {
+      type: "object",
+      properties: {}
+    }
+  }
+};
 function formatPhoneNumber(phone) {
   let cleaned = phone.replace(/\D/g, '');
   if (cleaned.startsWith('55') && (cleaned.length === 12 || cleaned.length === 13)) {
@@ -338,7 +349,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
       response = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: conversations[chatId],
-        tools: [toolFinalizarPedido, toolEnviarCardapio]
+        tools: [toolFinalizarPedido, toolEnviarCardapio, toolVerificarPedido]
       });
     } catch (e) {
       if (e.status === 429) {
@@ -348,7 +359,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
         response = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           messages: conversations[chatId],
-          tools: [toolFinalizarPedido, toolEnviarCardapio]
+          tools: [toolFinalizarPedido, toolEnviarCardapio, toolVerificarPedido]
         });
       } else {
         throw e;
@@ -376,6 +387,45 @@ async function processarMensagem(chatId, userText, mediaPart) {
             console.error("❌ Erro ao ler cardapio.jpg:", err.message);
             await sendWhatsAppMessage(chatId, "Desculpe, não consegui carregar a foto do cardápio no momento. Mas temos deliciosas Pizzas! O que deseja?");
             conversations[chatId].push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: "Erro ao enviar cardápio." });
+          }
+        }
+        else if (toolCall.function.name === "verificar_status_pedido") {
+          console.log(`🤖 OpenAI solicitou status do pedido para ${chatId}`);
+          try {
+            const numTelefone = formatPhoneNumber(chatId);
+            const limiteTempo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(); // 6 horas atrás
+
+            const { data: pedidos, error: supabaseError } = await supabase
+              .from('orders')
+              .select('*')
+              .eq('customer_phone', numTelefone)
+              .gte('created_at', limiteTempo)
+              .order('created_at', { ascending: false })
+              .limit(1);
+
+            let msgResposta = `Nenhum pedido recente encontrado para o telefone ${numTelefone} nas últimas 6 horas. Talvez ele ainda não tenha finalizado no site.`;
+            if (!supabaseError && pedidos && pedidos.length > 0) {
+              const p = pedidos[0];
+              msgResposta = `Pedido Recente Encontrado no Banco de Dados!\nNº do Pedido: ${p.confirmation_code || p.id}\nStatus Atual: ${p.status}\nTotal Pago: R$ ${p.total}\nEndereço de Entrega: ${p.delivery_address ? p.delivery_address.replace(/\n/g, ' ') : 'Retirada'}`;
+            }
+
+            conversations[chatId].push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: msgResposta });
+            
+            // Faz a IA ler o resultado do banco e gerar uma resposta conversacional
+            let followupResponse = await openai.chat.completions.create({
+              model: "gpt-4o-mini",
+              messages: conversations[chatId],
+              tools: [toolFinalizarPedido, toolEnviarCardapio, toolVerificarPedido]
+            });
+            const followMsg = followupResponse.choices[0].message;
+            if (followMsg.content) {
+              botLastReply.set(chatId, Date.now());
+              await sendWhatsAppMessage(chatId, followMsg.content);
+              conversations[chatId].push(followMsg);
+            }
+          } catch (err) {
+            console.error("Erro na verificação de pedido:", err.message);
+            conversations[chatId].push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: "Erro ao buscar pedido no banco." });
           }
         }
         else if (toolCall.function.name === "finalizar_pedido") {
