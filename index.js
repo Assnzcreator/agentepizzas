@@ -43,7 +43,7 @@ const MAX_PROCESSED_CACHE = 500; // Limpa cache antigo para não consumir memór
 
 // Debounce: agrupa mensagens picotadas do mesmo chat antes de processar
 const textBuffers = new Map(); // chatId -> { texts: [], timer: null }
-const DEBOUNCE_MS = 2500; // Aguarda 2.5s por mais mensagens antes de disparar
+const DEBOUNCE_MS = 4000; // Aguarda 4s por mais mensagens antes de disparar
 
 // Atendimento humano: chats pausados manualmente (chatId -> timestamp de expiração)
 const humanPausedChats = new Map();
