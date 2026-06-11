@@ -45,6 +45,9 @@ Você já fez o seu pedido pelo site ou prefere fazer o pedido por aqui mesmo?"
      - Pizza de Camarão: R$ 30,00
      - Coca Cola 1.5L: R$ 12,00
      *Total: R$ 72,00*
+     
+     ⚠️ *Aviso Importante:* O pagamento deve ser feito SOMENTE na hora da entrega ou retirada.
+
      NUNCA mostre "R$ 0,00" no chat! NUNCA esconda o valor de um combo! NUNCA coloque pizza avulsa dentro de combo! Calcule a soma final corretamente! Após o resumo, pergunte se pode confirmar.
 7. CHAMADA finalizar_pedido:
    - SÓ chame a função finalizar_pedido APÓS o cliente dar o "ok" no resumo do pedido (ex: "sim", "pode mandar", "tá certo").
