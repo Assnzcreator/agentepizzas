@@ -388,13 +388,13 @@ async function processarMensagem(chatId, userText, mediaPart) {
           let finalTotal = itemsLimpos.reduce((acc, item) => acc + (item.unit_price * item.quantity), 0);
 
           const enderecoComNota = args.delivery_type === "DELIVERY"
-            ? `${args.delivery_address || ""}\n\n⚠️ FRETE: A VER COM ENTREGADOR\nR$5 dentro da cidade | R$15 fora da cidade`.toUpperCase()
+            ? `*${args.delivery_address || ""}*\n\n⚠️ FRETE: A VER COM ENTREGADOR\nR$5 dentro da cidade | R$15 fora da cidade`.toUpperCase()
             : null;
 
           const { data: orderData, error: orderError } = await supabase
             .from('orders')
             .insert([{
-              customer_name: (args.customer_name || "Cliente WhatsApp").toUpperCase(),
+              customer_name: "*" + (args.customer_name || "Cliente WhatsApp").toUpperCase() + "*",
               customer_phone: formatPhoneNumber(chatId),
               delivery_type: tipoEntregaConvertido,
               delivery_address: enderecoComNota,
@@ -416,7 +416,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
               const itemsToInsert = itemsLimpos.map(item => ({
                 order_id: orderData.id,
                 product_id: "whatsapp-custom",
-                product_name: String(item.product_name).toUpperCase(),
+                product_name: "*" + String(item.product_name).toUpperCase() + "*",
                 size: "M",
                 quantity: item.quantity,
                 unit_price: item.unit_price
