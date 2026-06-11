@@ -501,6 +501,12 @@ app.post('/webhook', async (req, res) => {
   }
   if (messageId) markMessageProcessed(messageId);
 
+  // Ignora eventos de status ou webhooks vazios que podem fazer a IA resetar a conversa
+  if (!userText && !isMedia) {
+    console.log(`⚠️ Ignorando webhook sem texto e sem mídia.`);
+    return;
+  }
+
   // === VERIFICA SE CHAT ESTÁ EM ATENDIMENTO HUMANO ===
   if (humanPausedChats.has(chatId)) {
     if (Date.now() < humanPausedChats.get(chatId)) {
