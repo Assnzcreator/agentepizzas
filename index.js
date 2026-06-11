@@ -250,6 +250,7 @@ app.post('/retomar', (req, res) => {
   res.json({ status: 'ativo' });
 });
 
+const lastClosedMessageAt = new Map();
 // ============================================================
 // FUNÇÃO PRINCIPAL DE PROCESSAMENTO (chamada pelo debounce ou por mídia)
 // ============================================================
@@ -279,6 +280,26 @@ async function processarMensagem(chatId, userText, mediaPart) {
   const daysOfWeekPT = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
   const nowBRT = new Date(Date.now() - 3 * 60 * 60 * 1000);
   const diaDaSemana = daysOfWeekPT[nowBRT.getUTCDay()];
+  const hora = nowBRT.getUTCHours();
+
+  let isAberto = false;
+  if (diaDaSemana === "Quinta-feira") {
+    if (hora >= 17 && hora < 23) isAberto = true;
+  } else {
+    if (hora >= 18 && hora < 23) isAberto = true;
+  }
+
+  if (!isAberto) {
+    const lastSent = lastClosedMessageAt.get(chatId) || 0;
+    if (Date.now() - lastSent > 60 * 60 * 1000) { // Envia a cada 1h no máximo por cliente para não floodar
+      const msgFechado = `Olá! 🌙 No momento nossa pizzaria está fechada.\n\nNosso horário de funcionamento é:\n📍 Quinta-feira: 17:00 às 23:00\n📍 Demais dias: 18:00 às 23:00\n\nAgradecemos o contato e esperamos seu pedido no nosso horário de atendimento! 🍕`;
+      await sendWhatsAppMessage(chatId, msgFechado);
+      lastClosedMessageAt.set(chatId, Date.now());
+    }
+    resolveProcessing();
+    processingChats.delete(chatId);
+    return;
+  }
 
   const currentSystemPrompt = getSystemPrompt(dynamicMenuString, diaDaSemana);
 
