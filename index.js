@@ -348,6 +348,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
     try {
       response = await openai.chat.completions.create({
         model: "gpt-4o-mini",
+        temperature: 0.2,
         messages: conversations[chatId],
         tools: [toolFinalizarPedido, toolEnviarCardapio, toolVerificarPedido]
       });
@@ -358,6 +359,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
         await new Promise(resolve => setTimeout(resolve, 15000));
         response = await openai.chat.completions.create({
           model: "gpt-4o-mini",
+          temperature: 0.2,
           messages: conversations[chatId],
           tools: [toolFinalizarPedido, toolEnviarCardapio, toolVerificarPedido]
         });
