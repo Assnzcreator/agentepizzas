@@ -442,7 +442,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
           let finalTotal = itemsLimpos.reduce((acc, item) => acc + (item.unit_price * item.quantity), 0);
 
           const enderecoComNota = args.delivery_type === "DELIVERY"
-            ? `*${args.delivery_address || ""}*\n\n⚠️ FRETE: A VER COM ENTREGADOR\nR$5 dentro da cidade | R$15 fora da cidade`.toUpperCase()
+            ? `${args.delivery_address || ""}\n\n⚠️ FRETE: A VER COM ENTREGADOR\nR$5 dentro da cidade | R$15 fora da cidade`.toUpperCase()
             : null;
 
           // === NUMERAÇÃO DIÁRIA DO PEDIDO ===
@@ -466,7 +466,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
           const { data: orderData, error: orderError } = await supabase
             .from('orders')
             .insert([{
-              customer_name: "*" + String(args.customer_name || "Cliente WhatsApp").replace(/\*/g, '').toUpperCase() + "*",
+              customer_name: String(args.customer_name || "Cliente WhatsApp").replace(/\*/g, '').toUpperCase(),
               customer_phone: formatPhoneNumber(chatId),
               delivery_type: tipoEntregaConvertido,
               delivery_address: enderecoComNota,
@@ -488,10 +488,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
               const itemsToInsert = itemsLimpos.map(item => {
                 const linhasFormatadas = String(item.product_name)
                   .replace(/\*/g, '')
-                  .toUpperCase()
-                  .split('\n')
-                  .map(linha => "*" + linha + "*")
-                  .join('\n');
+                  .toUpperCase();
 
                 return {
                   order_id: orderData.id,
