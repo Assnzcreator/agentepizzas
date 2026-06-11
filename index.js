@@ -292,7 +292,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
   if (!isAberto) {
     const lastSent = lastClosedMessageAt.get(chatId) || 0;
     if (Date.now() - lastSent > 60 * 60 * 1000) { // Envia a cada 1h no máximo por cliente para não floodar
-      const msgFechado = `Olá! 🌙 No momento nossa pizzaria está fechada.\n\nNosso horário de funcionamento é:\n📍 Quinta-feira: 17:00 às 23:00\n📍 Demais dias: 18:00 às 23:00\n\nAgradecemos o contato e esperamos seu pedido no nosso horário de atendimento! 🍕`;
+      const msgFechado = `Olá! 🌙 Agradecemos muito o seu contato!\n\nNo momento, nossos fornos estão desligados e a pizzaria encontra-se fechada. 😴🍕\n\n🕒 *Nosso Horário de Funcionamento:*\n• Quinta-feira: 17h00 às 23h00\n• Demais dias: 18h00 às 23h00\n\nSerá um prazer preparar uma pizza deliciosa para você assim que abrirmos! Guarde seu desejo e fale com a gente mais tarde. Até já! 🛵💨`;
       await sendWhatsAppMessage(chatId, msgFechado);
       lastClosedMessageAt.set(chatId, Date.now());
     }
