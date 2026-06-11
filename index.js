@@ -395,6 +395,24 @@ async function processarMensagem(chatId, userText, mediaPart) {
             ? `*${args.delivery_address || ""}*\n\n⚠️ FRETE: A VER COM ENTREGADOR\nR$5 dentro da cidade | R$15 fora da cidade`.toUpperCase()
             : null;
 
+          // === NUMERAÇÃO DIÁRIA DO PEDIDO ===
+          // Pega a data de hoje no fuso de Brasília para resetar à meia-noite
+          const brtTime = new Date(Date.now() - 3 * 60 * 60 * 1000);
+          const year = brtTime.getUTCFullYear();
+          const month = String(brtTime.getUTCMonth() + 1).padStart(2, '0');
+          const day = String(brtTime.getUTCDate()).padStart(2, '0');
+          // Meia-noite em Brasília = 03:00 UTC
+          const midnightBRT_in_UTC = `${year}-${month}-${day}T03:00:00.000Z`;
+
+          // Conta quantos pedidos foram feitos de hoje até agora
+          const { count } = await supabase
+            .from('orders')
+            .select('*', { count: 'exact', head: true })
+            .gte('created_at', midnightBRT_in_UTC);
+
+          const dailyOrderNumber = (count || 0) + 1;
+          const codigoFormatado = dailyOrderNumber.toString().padStart(3, '0'); // ex: 001, 002
+
           const { data: orderData, error: orderError } = await supabase
             .from('orders')
             .insert([{
@@ -406,7 +424,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
               payment_change: args.payment_change || null,
               total: finalTotal,
               status: 'PENDENTE',
-              confirmation_code: Math.floor(1000 + Math.random() * 9000).toString()
+              confirmation_code: codigoFormatado
             }])
             .select()
             .single();
