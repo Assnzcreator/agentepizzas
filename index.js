@@ -365,7 +365,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
           console.log("🤖 OpenAI fechou o pedido:", args);
 
           const tipoEntregaConvertido = args.delivery_type === "DELIVERY" ? "WHATSAPP:DELIVERY" : "WHATSAPP:BALCAO";
-          const itemsLimpos = (args.items || []).filter(i => !i.product_name.toLowerCase().includes("taxa de entrega") && !i.product_name.toLowerCase().includes("frete"));
+          const itemsLimpos = args.items || [];
           let finalTotal = itemsLimpos.reduce((acc, item) => acc + (item.unit_price * item.quantity), 0);
 
           const enderecoComNota = args.delivery_type === "DELIVERY"
