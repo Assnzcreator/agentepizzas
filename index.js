@@ -566,20 +566,7 @@ app.post('/webhook', async (req, res) => {
     return;
   }
 
-  // === TRAVA DE HORÁRIO DE FUNCIONAMENTO (18:00 às 23:00) ===
-  const nowBRT = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const hour = nowBRT.getUTCHours();
-  if (hour < 18 || hour >= 23) {
-    const lastClosedMsg = closedChats.get(chatId) || 0;
-    if (Date.now() - lastClosedMsg > CLOSED_MSG_COOLDOWN) {
-      closedChats.set(chatId, Date.now());
-      await sendWhatsAppMessage(chatId, "🌙 *Empório das Pizzas*\n\nOlá! No momento estamos fechados. Nosso horário de atendimento é das *18:00 às 23:00*.\n\nAgradecemos o contato e esperamos seu pedido mais tarde! 🍕");
-      console.log(`🌙 Mensagem de fechado enviada para [${chatId}].`);
-    } else {
-      console.log(`🌙 Loja fechada. Ignorando mensagem de [${chatId}] (já avisado).`);
-    }
-    return; // Impede o bot de continuar o atendimento
-  }
+
 
   // === PROTEÇÃO ANTI-DUPLICAÇÃO ===
   if (messageId && processedMessages.has(messageId)) {
