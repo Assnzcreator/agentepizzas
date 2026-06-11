@@ -431,7 +431,8 @@ async function processarMensagem(chatId, userText, mediaPart) {
             
             botLastReply.set(chatId, Date.now());
             await sendWhatsAppMessage(chatId, msgConfirmacao);
-            delete conversations[chatId];
+            conversations[chatId].push({ role: "tool", tool_call_id: toolCall.id, name: toolCall.function.name, content: "Pedido salvo com sucesso no banco de dados." });
+            conversations[chatId].push({ role: "system", content: "INSTRUÇÃO INTERNA: O pedido anterior foi concluído e enviado à cozinha. Se o cliente pedir mais alguma coisa agora, trate como um NOVO pedido. NÃO inclua os itens do pedido anterior na nova chamada de finalizar_pedido. O cliente já passou endereço e nome, você pode confirmar se ele quer usar os mesmos dados." });
           }
         }
       }
