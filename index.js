@@ -315,8 +315,8 @@ async function processarMensagem(chatId, userText, mediaPart) {
 
   conversations[chatId].push({ role: "user", content: userContent });
 
-  // === LIMITE DE MEMÓRIA (Manter últimas 15 mensagens + System) ===
-  const maxMemory = 15;
+  // === LIMITE DE MEMÓRIA (Manter últimas 20 mensagens + System) ===
+  const maxMemory = 20;
   if (conversations[chatId].length > maxMemory + 1) {
     const systemPrompt = conversations[chatId][0];
     let recentMessages = conversations[chatId].slice(1).slice(-maxMemory);
