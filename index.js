@@ -57,6 +57,17 @@ const botLastReply = new Map();
 const closedChats = new Map();
 const CLOSED_MSG_COOLDOWN = 12 * 60 * 60 * 1000; // 12 horas
 
+const recentBotMessages = new Set();
+function addRecentBotMessage(text) {
+  if (!text) return;
+  const cleanText = text.trim();
+  recentBotMessages.add(cleanText);
+  if (recentBotMessages.size > 100) {
+    const first = recentBotMessages.values().next().value;
+    recentBotMessages.delete(first);
+  }
+}
+
 function markMessageProcessed(messageId) {
   processedMessages.add(messageId);
   // Limpa cache antigo se ficar muito grande
@@ -128,6 +139,7 @@ async function getDynamicMenu() {
 
 async function sendWhatsAppMessage(chatId, text) {
   try {
+    addRecentBotMessage(text);
     const limpo = chatId.split('@')[0];
     await axios.post(`${process.env.UAZAPI_URL}/send/text`, {
       number: limpo,
@@ -140,7 +152,8 @@ async function sendWhatsAppMessage(chatId, text) {
       headers: {
         'Content-Type': 'application/json',
         'token': process.env.UAZAPI_TOKEN
-      }
+      },
+      timeout: 10000
     });
   } catch (error) {
     console.error("Erro ao enviar mensagem UAZAPI:", error?.response?.data || error.message);
@@ -149,6 +162,7 @@ async function sendWhatsAppMessage(chatId, text) {
 
 async function sendWhatsAppMedia(chatId, base64Data, caption) {
   try {
+    addRecentBotMessage(caption);
     const limpo = chatId.split('@')[0];
     await axios.post(`${process.env.UAZAPI_URL}/send/media`, {
       number: limpo,
@@ -159,7 +173,8 @@ async function sendWhatsAppMedia(chatId, base64Data, caption) {
       headers: {
         'Content-Type': 'application/json',
         'token': process.env.UAZAPI_TOKEN
-      }
+      },
+      timeout: 15000
     });
   } catch (error) {
     console.error("Erro ao enviar mídia UAZAPI:", error?.response?.data || error.message);
@@ -265,106 +280,105 @@ async function processarMensagem(chatId, userText, mediaPart) {
   const processingPromise = new Promise(r => { resolveProcessing = r; });
   processingChats.set(chatId, processingPromise);
 
-  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.includes('COLOQUE_AQUI')) {
-    console.log("❌ ERRO: OpenAI API Key não configurada no arquivo .env!");
-    resolveProcessing();
-    processingChats.delete(chatId);
-    return;
-  }
-
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-  const dynamicMenuString = await getDynamicMenu();
-
-  // Passa o dia da semana em BRT para o prompt (evita alucinação de data)
-  const daysOfWeekPT = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
-  const nowBRT = new Date(Date.now() - 3 * 60 * 60 * 1000);
-  const diaDaSemana = daysOfWeekPT[nowBRT.getUTCDay()];
-  const hora = nowBRT.getUTCHours();
-
-  let isAberto = false;
-  if (diaDaSemana === "Quinta-feira") {
-    if (hora >= 17 && hora < 23) isAberto = true;
-  } else {
-    if (hora >= 18 && hora < 23) isAberto = true;
-  }
-
-  if (!isAberto) {
-    const lastSent = lastClosedMessageAt.get(chatId) || 0;
-    if (Date.now() - lastSent > 60 * 60 * 1000) { // Envia a cada 1h no máximo por cliente para não floodar
-      const msgFechado = `Olá! 🌙 Agradecemos muito o seu contato!\n\nNo momento, nossos fornos estão desligados e a pizzaria encontra-se fechada. 😴🍕\n\n🕒 *Nosso Horário de Funcionamento:*\n• Quinta-feira: 17h00 às 23h00\n• Demais dias: 18h00 às 23h00\n\nSerá um prazer preparar uma pizza deliciosa para você assim que abrirmos! Guarde seu desejo e fale com a gente mais tarde. Até já! 🛵💨`;
-      await sendWhatsAppMessage(chatId, msgFechado);
-      lastClosedMessageAt.set(chatId, Date.now());
-    }
-    resolveProcessing();
-    processingChats.delete(chatId);
-    return;
-  }
-
-  const currentSystemPrompt = getSystemPrompt(dynamicMenuString, diaDaSemana);
-
-  if (!conversations[chatId]) {
-    conversations[chatId] = [
-      { role: "system", content: currentSystemPrompt }
-    ];
-  } else {
-    if (conversations[chatId].length > 0 && conversations[chatId][0].role === "system") {
-      conversations[chatId][0].content = currentSystemPrompt;
-    }
-  }
-
-  // Se for áudio, processa a transcrição
-  if (mediaPart && mediaPart.mimeType && mediaPart.mimeType.startsWith('audio/')) {
-    try {
-      const path = require('path');
-      const os = require('os');
-      const tempFile = path.join(os.tmpdir(), `audio_${Date.now()}.ogg`);
-      fs.writeFileSync(tempFile, Buffer.from(mediaPart.data, 'base64'));
-
-      console.log("🎙️ Transcrevendo áudio com Whisper...");
-      const transcription = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(tempFile),
-        model: "whisper-1",
-      });
-      console.log("✅ Áudio transcrito:", transcription.text);
-      userText = `[Áudio transcrito]: ${transcription.text}`;
-
-      fs.unlinkSync(tempFile);
-      mediaPart = null;
-    } catch (err) {
-      console.error("❌ Erro ao transcrever áudio:", err.message || err);
-      await sendWhatsAppMessage(chatId, "Desculpe, não consegui entender o áudio. Pode mandar por texto?");
-      resolveProcessing();
-      processingChats.delete(chatId);
+  try {
+    if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY.includes('COLOQUE_AQUI')) {
+      console.log("❌ ERRO: OpenAI API Key não configurada no arquivo .env!");
       return;
     }
-  }
 
-  let userContent;
-  if (mediaPart) {
-    userContent = [];
-    userContent.push({ type: "text", text: userText || "Analise a mídia que acabei de enviar." });
-    userContent.push({ type: "image_url", image_url: { url: `data:${mediaPart.mimeType};base64,${mediaPart.data}` } });
-  } else {
-    userContent = userText || "(Mensagem vazia)";
-  }
+    const openai = new OpenAI({ 
+      apiKey: process.env.OPENAI_API_KEY,
+      timeout: 20000,
+      maxRetries: 1
+    });
 
-  conversations[chatId].push({ role: "user", content: userContent });
+    const dynamicMenuString = await getDynamicMenu();
 
-  // === LIMITE DE MEMÓRIA (Manter últimas 20 mensagens + System) ===
-  const maxMemory = 20;
-  if (conversations[chatId].length > maxMemory + 1) {
-    const systemPrompt = conversations[chatId][0];
-    let recentMessages = conversations[chatId].slice(1).slice(-maxMemory);
-    
-    // Evitar quebra de contexto de ferramentas (remover respostas de ferramentas sem a chamada inicial)
-    while (recentMessages.length > 0 && recentMessages[0].role === 'tool') {
-      recentMessages.shift();
+    // Passa o dia da semana em BRT para o prompt (evita alucinação de data)
+    const daysOfWeekPT = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
+    const nowBRT = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    const diaDaSemana = daysOfWeekPT[nowBRT.getUTCDay()];
+    const hora = nowBRT.getUTCHours();
+
+    let isAberto = false;
+    if (diaDaSemana === "Quinta-feira") {
+      if (hora >= 17 && hora < 23) isAberto = true;
+    } else {
+      if (hora >= 18 && hora < 23) isAberto = true;
     }
-    
-    conversations[chatId] = [systemPrompt, ...recentMessages];
-  }
-  try {
+
+    if (!isAberto) {
+      const lastSent = lastClosedMessageAt.get(chatId) || 0;
+      if (Date.now() - lastSent > 60 * 60 * 1000) { // Envia a cada 1h no máximo por cliente para não floodar
+        const msgFechado = `Olá! 🌙 Agradecemos muito o seu contato!\n\nNo momento, nossos fornos estão desligados e a pizzaria encontra-se fechada. 😴🍕\n\n🕒 *Nosso Horário de Funcionamento:*\n• Quinta-feira: 17h00 às 23h00\n• Demais dias: 18h00 às 23h00\n\nSerá um prazer preparar uma pizza deliciosa para você assim que abrirmos! Guarde seu desejo e fale com a gente mais tarde. Até já! 🛵💨`;
+        await sendWhatsAppMessage(chatId, msgFechado);
+        lastClosedMessageAt.set(chatId, Date.now());
+      }
+      return;
+    }
+
+    const currentSystemPrompt = getSystemPrompt(dynamicMenuString, diaDaSemana);
+
+    if (!conversations[chatId]) {
+      conversations[chatId] = [
+        { role: "system", content: currentSystemPrompt }
+      ];
+    } else {
+      if (conversations[chatId].length > 0 && conversations[chatId][0].role === "system") {
+        conversations[chatId][0].content = currentSystemPrompt;
+      }
+    }
+
+    // Se for áudio, processa a transcrição
+    if (mediaPart && mediaPart.mimeType && mediaPart.mimeType.startsWith('audio/')) {
+      try {
+        const path = require('path');
+        const os = require('os');
+        const tempFile = path.join(os.tmpdir(), `audio_${Date.now()}.ogg`);
+        fs.writeFileSync(tempFile, Buffer.from(mediaPart.data, 'base64'));
+
+        console.log("🎙️ Transcrevendo áudio com Whisper...");
+        const transcription = await openai.audio.transcriptions.create({
+          file: fs.createReadStream(tempFile),
+          model: "whisper-1",
+        });
+        console.log("✅ Áudio transcrito:", transcription.text);
+        userText = `[Áudio transcrito]: ${transcription.text}`;
+
+        fs.unlinkSync(tempFile);
+        mediaPart = null;
+      } catch (err) {
+        console.error("❌ Erro ao transcrever áudio:", err.message || err);
+        await sendWhatsAppMessage(chatId, "Desculpe, não consegui entender o áudio. Pode mandar por texto?");
+        return;
+      }
+    }
+
+    let userContent;
+    if (mediaPart) {
+      userContent = [];
+      userContent.push({ type: "text", text: userText || "Analise a mídia que acabei de enviar." });
+      userContent.push({ type: "image_url", image_url: { url: `data:${mediaPart.mimeType};base64,${mediaPart.data}` } });
+    } else {
+      userContent = userText || "(Mensagem vazia)";
+    }
+
+    conversations[chatId].push({ role: "user", content: userContent });
+
+    // === LIMITE DE MEMÓRIA (Manter últimas 20 mensagens + System) ===
+    const maxMemory = 20;
+    if (conversations[chatId].length > maxMemory + 1) {
+      const systemPrompt = conversations[chatId][0];
+      let recentMessages = conversations[chatId].slice(1).slice(-maxMemory);
+      
+      // Evitar quebra de contexto de ferramentas (remover respostas de ferramentas sem a chamada inicial)
+      while (recentMessages.length > 0 && recentMessages[0].role === 'tool') {
+        recentMessages.shift();
+      }
+      
+      conversations[chatId] = [systemPrompt, ...recentMessages];
+    }
+
     let response;
     try {
       response = await openai.chat.completions.create({
@@ -542,7 +556,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
       await sendWhatsAppMessage(chatId, aiMessage);
     }
   } catch (error) {
-    console.error("Erro na OpenAI:", error);
+    console.error(`❌ Erro geral ao processar mensagem para ${chatId}:`, error);
   } finally {
     if (resolveProcessing) resolveProcessing();
     processingChats.delete(chatId);
@@ -582,8 +596,10 @@ app.post('/webhook', async (req, res) => {
     const lastBotMsgTime = botLastReply.get(chatId) || 0;
     const timeSinceBotMsg = Date.now() - lastBotMsgTime;
 
+    const isKnownBotText = userText && recentBotMessages.has(userText.trim());
+
     // Se o bot não mandou mensagem nos últimos 15 segundos, então foi o HUMANO que digitou
-    if (timeSinceBotMsg > 15000 && !wasSentByApi) {
+    if (timeSinceBotMsg > 15000 && !wasSentByApi && !isKnownBotText) {
       humanPausedChats.set(chatId, Date.now() + HUMAN_PAUSE_MS);
       console.log(`👤 Atendente humano detectado em [${chatId}]. Bot pausado neste chat por 30 min.`);
     }
@@ -656,7 +672,8 @@ app.post('/webhook', async (req, res) => {
         return_link: false,
         generate_mp3: true
       }, {
-        headers: { 'token': process.env.UAZAPI_TOKEN }
+        headers: { 'token': process.env.UAZAPI_TOKEN },
+        timeout: 20000
       });
 
       if (mediaResponse.data && mediaResponse.data.base64Data) {
