@@ -358,6 +358,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
     conversations[chatId].push(responseMessage);
 
     if (toolCalls && toolCalls.length > 0) {
+      let pedidoFinalizado = false;
       for (const toolCall of toolCalls) {
         if (toolCall.function.name === "enviar_foto_cardapio") {
           console.log("🤖 OpenAI decidiu enviar a foto do cardápio.");
@@ -374,6 +375,11 @@ async function processarMensagem(chatId, userText, mediaPart) {
           }
         }
         else if (toolCall.function.name === "finalizar_pedido") {
+          if (pedidoFinalizado) {
+            console.log("⚠️ Evitando duplicidade de finalizar_pedido na mesma resposta.");
+            continue;
+          }
+          pedidoFinalizado = true;
           const args = JSON.parse(toolCall.function.arguments);
           console.log("🤖 OpenAI fechou o pedido:", args);
 
