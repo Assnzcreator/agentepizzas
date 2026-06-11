@@ -466,7 +466,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
           const { data: orderData, error: orderError } = await supabase
             .from('orders')
             .insert([{
-              customer_name: "*" + (args.customer_name || "Cliente WhatsApp").toUpperCase() + "*",
+              customer_name: "*" + String(args.customer_name || "Cliente WhatsApp").replace(/\*/g, '').toUpperCase() + "*",
               customer_phone: formatPhoneNumber(chatId),
               delivery_type: tipoEntregaConvertido,
               delivery_address: enderecoComNota,
@@ -488,7 +488,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
               const itemsToInsert = itemsLimpos.map(item => ({
                 order_id: orderData.id,
                 product_id: "whatsapp-custom",
-                product_name: "*" + String(item.product_name).toUpperCase() + "*",
+                product_name: "*" + String(item.product_name).replace(/\*/g, '').toUpperCase() + "*",
                 size: "M",
                 quantity: item.quantity,
                 unit_price: item.unit_price
