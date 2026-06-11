@@ -315,6 +315,19 @@ async function processarMensagem(chatId, userText, mediaPart) {
 
   conversations[chatId].push({ role: "user", content: userContent });
 
+  // === LIMITE DE MEMÓRIA (Manter últimas 15 mensagens + System) ===
+  const maxMemory = 15;
+  if (conversations[chatId].length > maxMemory + 1) {
+    const systemPrompt = conversations[chatId][0];
+    let recentMessages = conversations[chatId].slice(1).slice(-maxMemory);
+    
+    // Evitar quebra de contexto de ferramentas (remover respostas de ferramentas sem a chamada inicial)
+    while (recentMessages.length > 0 && recentMessages[0].role === 'tool') {
+      recentMessages.shift();
+    }
+    
+    conversations[chatId] = [systemPrompt, ...recentMessages];
+  }
   try {
     let response;
     try {
