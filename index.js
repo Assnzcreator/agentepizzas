@@ -390,7 +390,7 @@ async function processarMensagem(chatId, userText, mediaPart) {
     } catch (e) {
       if (e.status === 429) {
         console.log("⚠️ Limite de requisições atingido. Aguardando 15 segundos...");
-        await sendWhatsAppMessage(chatId, "⏳ Estou processando sua mensagem, só um instante...");
+        // await sendWhatsAppMessage(chatId, "⏳ Estou processando sua mensagem, só um instante...");
         await new Promise(resolve => setTimeout(resolve, 15000));
         response = await openai.chat.completions.create({
           model: "gpt-4o-mini",
